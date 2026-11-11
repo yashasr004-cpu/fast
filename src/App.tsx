@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bluetooth,
   BluetoothConnected,
@@ -7,6 +7,7 @@ import {
   Radio,
   Watch,
 } from 'lucide-react';
+import { CapacitorBleTransport } from './ble/capacitorBleTransport';
 import { MockReflexTransport } from './ble/mockTransport';
 import {
   buildWatchfaceBinary,
@@ -22,15 +23,17 @@ import type {
   UploadProgress,
   WatchTransport,
 } from './ble/types';
-import { WebBluetoothTransport } from './ble/webBluetoothTransport';
+import {
+  isNativeBlePlatform,
+  WebBluetoothTransport,
+} from './ble/webBluetoothTransport';
 import { BandFeaturesPanel } from './components/BandFeaturesPanel';
 import { BleInspectorPanel } from './components/BleInspectorPanel';
-import { ReflexBandPreview } from './components/ReflexBandPreview';
 import { WatchfaceEditor } from './components/WatchfaceEditor';
 import { DEFAULT_TELEMETRY, PRESET_WATCHFACES } from './studio/presets';
+import { renderWatchfaceToRgba } from './studio/renderer';
 import type {
   WatchfaceConfig,
-  WatchNotification,
   WatchSlot,
   WatchTelemetry,
 } from './types/watchface';
@@ -99,7 +102,7 @@ export function App() {
   const [config, setConfig] = useState<WatchfaceConfig>(PRESET_WATCHFACES[0]);
   const [savedFaces, setSavedFaces] = useState<WatchfaceConfig[]>(loadSavedFaces);
   const [telemetry, setTelemetry] = useState<WatchTelemetry>(DEFAULT_TELEMETRY);
-  const [now, setNow] = useState<Date>(() => new Date());
+  const nativeBle = isNativeBlePlatform();
 
   const [slots, setSlots] = useState<WatchSlot[]>(() =>
     PRESET_WATCHFACES.slice(0, 4).map((preset, index) => ({
@@ -121,16 +124,8 @@ export function App() {
 
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [lastCrcHex, setLastCrcHex] = useState<string | null>(null);
-  const [isVibrating, setIsVibrating] = useState(false);
-  const [activeNotification, setActiveNotification] =
-    useState<WatchNotification | null>(null);
   const [logs, setLogs] = useState<PacketLogEntry[]>([]);
   const [statusError, setStatusError] = useState<string | null>(null);
-
-  const [captureSignal, setCaptureSignal] = useState(0);
-  const pendingCaptureActionRef = useRef<((rgba: Uint8ClampedArray) => void) | null>(
-    null
-  );
 
   const appendLog = useCallback((entry: PacketLogEntry) => {
     setLogs((prev) => [entry, ...prev].slice(0, 120));
@@ -140,23 +135,6 @@ export function App() {
     () =>
       new MockReflexTransport({
         onLog: appendLog,
-        onBuzz: () => {
-          setIsVibrating(true);
-          setTimeout(() => setIsVibrating(false), 1400);
-        },
-        onNotification: (title, body, app) => {
-          const notif: WatchNotification = {
-            id: String(Date.now()),
-            app: app as WatchNotification['app'],
-            title,
-            body,
-            receivedAt: new Date().toLocaleTimeString(),
-          };
-          setActiveNotification(notif);
-          setTimeout(() => {
-            setActiveNotification((curr) => (curr?.id === notif.id ? null : curr));
-          }, 4500);
-        },
         onSlotActivated: (slotId) => {
           setActiveSlotId(slotId);
         },
@@ -164,25 +142,24 @@ export function App() {
     [appendLog]
   );
 
-  const webBleTransport = useMemo(
-    () =>
-      new WebBluetoothTransport({
+  const realBleTransport = useMemo(
+    () => {
+      const callbacks = {
         onLog: appendLog,
         onDisconnected: () => {
           setConnectionState('disconnected');
           setDeviceInfo(null);
         },
-      }),
-    [appendLog]
+      };
+      return nativeBle
+        ? new CapacitorBleTransport(callbacks)
+        : new WebBluetoothTransport(callbacks);
+    },
+    [appendLog, nativeBle]
   );
 
   const activeTransport: WatchTransport =
-    transportMode === 'mock' ? mockTransport : webBleTransport;
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    transportMode === 'mock' ? mockTransport : realBleTransport;
 
   useEffect(() => {
     try {
@@ -205,7 +182,7 @@ export function App() {
     try {
       setConnectionState('connecting');
       if (transportMode === 'web-bluetooth') {
-        webBleTransport.setExtraServiceUuids(extraUuidsInput.split(','));
+        realBleTransport.setExtraServiceUuids(extraUuidsInput.split(','));
       }
       const info = await activeTransport.connect();
       setDeviceInfo(info);
@@ -234,58 +211,48 @@ export function App() {
     setTransportMode(mode);
   };
 
-  const requestCapturedFrame = (callback: (rgba: Uint8ClampedArray) => void) => {
-    pendingCaptureActionRef.current = callback;
-    setCaptureSignal((n) => n + 1);
-  };
-
-  const handleFrameCaptured = (rgba: Uint8ClampedArray) => {
-    const cb = pendingCaptureActionRef.current;
-    pendingCaptureActionRef.current = null;
-    if (cb) cb(rgba);
-  };
-
-  const handleFlashToBand = () => {
+  const handleFlashToBand = async () => {
     setStatusError(null);
-    requestCapturedFrame(async (rgba) => {
-      try {
-        const { bytes } = buildWatchfaceBinary(
-          rgba,
-          selectedTargetSlot,
-          mapping.endianness
-        );
-        const result = await activeTransport.uploadWatchface(
-          bytes,
-          selectedTargetSlot,
-          mapping,
-          (progress) => setUploadProgress(progress)
-        );
-        const crcStr = `0x${result.crc16.toString(16).toUpperCase().padStart(4, '0')}`;
-        setLastCrcHex(crcStr);
-        setSlotConfigs((prev) => ({ ...prev, [selectedTargetSlot]: { ...config } }));
-        setSlots((prev) =>
-          prev.map((s) =>
-            s.slotId === selectedTargetSlot
-              ? {
-                  ...s,
-                  watchfaceId: config.id,
-                  watchfaceName: config.name || 'Custom Face',
-                  updatedAt: new Date().toLocaleTimeString(),
-                }
-              : s
-          )
-        );
-        setActiveSlotId(selectedTargetSlot);
-      } catch (err) {
-        setStatusError(err instanceof Error ? err.message : 'Watchface flash failed.');
-      } finally {
-        setUploadProgress(null);
-      }
-    });
+    try {
+      const rgba = await renderWatchfaceToRgba(config, telemetry, new Date());
+      const { bytes } = buildWatchfaceBinary(
+        rgba,
+        selectedTargetSlot,
+        mapping.endianness
+      );
+      const result = await activeTransport.uploadWatchface(
+        bytes,
+        selectedTargetSlot,
+        mapping,
+        (progress) => setUploadProgress(progress)
+      );
+      const crcStr = `0x${result.crc16.toString(16).toUpperCase().padStart(4, '0')}`;
+      setLastCrcHex(crcStr);
+      setSlotConfigs((prev) => ({ ...prev, [selectedTargetSlot]: { ...config } }));
+      setSlots((prev) =>
+        prev.map((s) =>
+          s.slotId === selectedTargetSlot
+            ? {
+                ...s,
+                watchfaceId: config.id,
+                watchfaceName: config.name || 'Custom Face',
+                updatedAt: new Date().toLocaleTimeString(),
+              }
+            : s
+        )
+      );
+      setActiveSlotId(selectedTargetSlot);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : 'Watchface flash failed.');
+    } finally {
+      setUploadProgress(null);
+    }
   };
 
-  const handleExportBin = () => {
-    requestCapturedFrame((rgba) => {
+  const handleExportBin = async () => {
+    setStatusError(null);
+    try {
+      const rgba = await renderWatchfaceToRgba(config, telemetry, new Date());
       const { bytes } = buildWatchfaceBinary(
         rgba,
         selectedTargetSlot,
@@ -299,7 +266,9 @@ export function App() {
         new Blob([copy.buffer], { type: 'application/octet-stream' }),
         `${safeName}-80x160.bin`
       );
-    });
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : 'Binary export failed.');
+    }
   };
 
   const handleExportJson = () => {
@@ -339,18 +308,6 @@ export function App() {
       }
     } catch (err) {
       setStatusError(err instanceof Error ? err.message : 'Failed to boot slot.');
-    }
-  };
-
-  const handleTouchPillTap = () => {
-    if (activeNotification) {
-      setActiveNotification(null);
-      return;
-    }
-    const nextSlot = (activeSlotId + 1) % slots.length;
-    setActiveSlotId(nextSlot);
-    if (slotConfigs[nextSlot]) {
-      setConfig({ ...slotConfigs[nextSlot] });
     }
   };
 
@@ -477,7 +434,7 @@ export function App() {
               className={`mode-pill-btn ${transportMode === 'web-bluetooth' ? 'active' : ''}`}
               onClick={() => void handleSwitchMode('web-bluetooth')}
             >
-              Web BLE
+              {nativeBle ? 'Android BLE' : 'Web BLE'}
             </button>
           </div>
           <button
@@ -501,7 +458,9 @@ export function App() {
                     ? 'Connecting…'
                     : transportMode === 'mock'
                       ? 'Connect Simulator'
-                      : 'Pair via Web BLE'}
+                      : nativeBle
+                        ? 'Pair via Android BLE'
+                        : 'Pair via Web BLE'}
                 </span>
               </>
             )}
@@ -530,26 +489,7 @@ export function App() {
         </div>
       )}
 
-      <main className="workspace-grid">
-        <aside className="preview-column">
-          <ReflexBandPreview
-            config={config}
-            telemetry={telemetry}
-            now={now}
-            connectionState={connectionState}
-            transportMode={transportMode}
-            isVibrating={isVibrating}
-            activeNotification={activeNotification}
-            uploadProgress={uploadProgress}
-            onCaptureFrame={handleFrameCaptured}
-            captureSignal={captureSignal}
-            onTouchPillTap={handleTouchPillTap}
-          />
-          <div className="preview-hint">
-            Tap the band&apos;s bottom touch key to cycle slots or dismiss alerts.
-          </div>
-        </aside>
-
+      <main className="workspace-single">
         <section className="editor-column">
           {activeTab === 'studio' && (
             <WatchfaceEditor

@@ -38,25 +38,8 @@ jobs:
 
       - name: Initialize Capacitor Android project
         run: |
-          npm install --no-save @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          npm install --no-save @capacitor/cli@7 @capacitor/android@7
           npx cap add android
-
-      - name: Add Bluetooth permissions to AndroidManifest.xml
-        run: |
-          node -e '
-          const fs = require("fs");
-          const p = "android/app/src/main/AndroidManifest.xml";
-          let xml = fs.readFileSync(p, "utf8");
-          const perms = [
-            "<uses-permission android:name=\"android.permission.BLUETOOTH\" android:maxSdkVersion=\"30\" />",
-            "<uses-permission android:name=\"android.permission.BLUETOOTH_ADMIN\" android:maxSdkVersion=\"30\" />",
-            "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" android:maxSdkVersion=\"30\" />",
-            "<uses-permission android:name=\"android.permission.BLUETOOTH_SCAN\" android:usesPermissionFlags=\"neverForLocation\" />",
-            "<uses-permission android:name=\"android.permission.BLUETOOTH_CONNECT\" />"
-          ].join("\n    ");
-          xml = xml.replace("<application", perms + "\n    <application");
-          fs.writeFileSync(p, xml, "utf8");
-          '
 
       - name: Sync Capacitor assets and build Debug APK
         run: |
@@ -78,3 +61,4 @@ jobs:
           tag_name: latest-apk
           name: Fastrack Reflex Studio Debug APK
           files: android/app/build/outputs/apk/debug/app-debug.apk
+

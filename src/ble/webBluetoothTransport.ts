@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core';
 import {
   bytesToHex,
   chunkPayloadFrames,
@@ -12,76 +13,34 @@ import type {
   UploadProgress,
   WatchTransport,
 } from './types';
+import {
+  COMMON_BLE_SERVICE_UUIDS,
+  formatGattProperties,
+  makePacketLog,
+  normalizeBleUuid,
+} from './utils';
 
 interface WebBluetoothCallbacks {
   onLog: (entry: PacketLogEntry) => void;
   onDisconnected?: () => void;
 }
 
-const STANDARD_OPTIONAL_SERVICES = [
-  'device_information',
-  'battery_service',
-  'heart_rate',
-  'generic_access',
-  'generic_attribute',
-  'current_time',
-  'alert_notification',
-  'immediate_alert',
-  'link_loss',
-  '00001530-1212-efde-1523-785feabcd123',
-  '0000fe59-0000-1000-8000-00805f9b34fb',
-  '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
-  '00000af0-0000-1000-8000-00805f9b34fb',
-  '0000ae00-0000-1000-8000-00805f9b34fb',
-  '0000fd00-0000-1000-8000-00805f9b34fb',
-  '0000fee0-0000-1000-8000-00805f9b34fb',
-  '0000fee1-0000-1000-8000-00805f9b34fb',
-  '0000fee7-0000-1000-8000-00805f9b34fb',
-  '0000fee8-0000-1000-8000-00805f9b34fb',
-  '0000fee9-0000-1000-8000-00805f9b34fb',
-  '0000feea-0000-1000-8000-00805f9b34fb',
-  '0000ff00-0000-1000-8000-00805f9b34fb',
-  '0000ff10-0000-1000-8000-00805f9b34fb',
-  '0000ffa0-0000-1000-8000-00805f9b34fb',
-  '0000ffb0-0000-1000-8000-00805f9b34fb',
-  '0000ffc0-0000-1000-8000-00805f9b34fb',
-  '0000ffd0-0000-1000-8000-00805f9b34fb',
-  '0000ffe0-0000-1000-8000-00805f9b34fb',
-  '0000ffe5-0000-1000-8000-00805f9b34fb',
-  '0000ffe9-0000-1000-8000-00805f9b34fb',
-  '0000fff0-0000-1000-8000-00805f9b34fb',
-];
-
-function makeLog(
-  direction: PacketLogEntry['direction'],
-  channel: string,
-  summary: string,
-  hex?: string
-): PacketLogEntry {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    timestamp: new Date().toLocaleTimeString(),
-    direction,
-    channel,
-    summary,
-    hex,
-  };
-}
-
-function formatProperties(props: BluetoothCharacteristicProperties): string[] {
-  const list: string[] = [];
-  if (props.read) list.push('read');
-  if (props.write) list.push('write');
-  if (props.writeWithoutResponse) list.push('writeWithoutResponse');
-  if (props.notify) list.push('notify');
-  if (props.indicate) list.push('indicate');
-  return list;
+export function isNativeBlePlatform(): boolean {
+  try {
+    return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
 }
 
 export function isWebBluetoothSupported(): {
   supported: boolean;
+  native?: boolean;
   reason?: string;
 } {
+  if (isNativeBlePlatform()) {
+    return { supported: true, native: true };
+  }
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return { supported: false, reason: 'No browser environment detected.' };
   }
@@ -104,13 +63,16 @@ export class WebBluetoothTransport implements WatchTransport {
   readonly mode = 'web-bluetooth' as const;
   private server: BluetoothRemoteGATTServer | null = null;
   private callbacks: WebBluetoothCallbacks;
-  private activeOptionalServices: string[] = [...STANDARD_OPTIONAL_SERVICES];
+  private activeOptionalServices: string[] = [...COMMON_BLE_SERVICE_UUIDS];
 
   constructor(callbacks: WebBluetoothCallbacks, extraServiceUuids: string[] = []) {
     this.callbacks = callbacks;
     if (extraServiceUuids.length > 0) {
       this.activeOptionalServices = Array.from(
-        new Set([...STANDARD_OPTIONAL_SERVICES, ...extraServiceUuids])
+        new Set([
+          ...COMMON_BLE_SERVICE_UUIDS,
+          ...extraServiceUuids.filter(Boolean).map(normalizeBleUuid),
+        ])
       );
     }
   }
@@ -118,8 +80,8 @@ export class WebBluetoothTransport implements WatchTransport {
   setExtraServiceUuids(uuids: string[]): void {
     this.activeOptionalServices = Array.from(
       new Set([
-        ...STANDARD_OPTIONAL_SERVICES,
-        ...uuids.map((u) => u.trim().toLowerCase()).filter(Boolean),
+        ...COMMON_BLE_SERVICE_UUIDS,
+        ...uuids.filter(Boolean).map(normalizeBleUuid),
       ])
     );
   }
@@ -131,7 +93,7 @@ export class WebBluetoothTransport implements WatchTransport {
     }
 
     this.callbacks.onLog(
-      makeLog('INFO', 'WEB-BLE', 'Opening browser Bluetooth device picker…')
+      makePacketLog('INFO', 'WEB-BLE', 'Opening browser Bluetooth device picker…')
     );
 
     let device: BluetoothDevice;
@@ -153,7 +115,7 @@ export class WebBluetoothTransport implements WatchTransport {
     device.addEventListener('gattserverdisconnected', () => {
       this.server = null;
       this.callbacks.onLog(
-        makeLog('WARN', 'WEB-BLE', `Device ${device.name ?? device.id} disconnected.`)
+        makePacketLog('WARN', 'WEB-BLE', `Device ${device.name ?? device.id} disconnected.`)
       );
       this.callbacks.onDisconnected?.();
     });
@@ -209,7 +171,7 @@ export class WebBluetoothTransport implements WatchTransport {
     };
 
     this.callbacks.onLog(
-      makeLog('RX', 'WEB-BLE', `Connected to ${info.name} (${info.id})`)
+      makePacketLog('RX', 'WEB-BLE', `Connected to ${info.name} (${info.id})`)
     );
     return info;
   }
@@ -250,7 +212,7 @@ export class WebBluetoothTransport implements WatchTransport {
         }
         charInfos.push({
           uuid: char.uuid,
-          properties: formatProperties(char.properties),
+          properties: formatGattProperties(char.properties),
           lastValueHex,
         });
       }
@@ -263,7 +225,7 @@ export class WebBluetoothTransport implements WatchTransport {
     }
 
     this.callbacks.onLog(
-      makeLog('INFO', 'GATT', `Discovered ${result.length} accessible primary services.`)
+      makePacketLog('INFO', 'GATT', `Discovered ${result.length} accessible primary services.`)
     );
     return result;
   }
@@ -314,7 +276,7 @@ export class WebBluetoothTransport implements WatchTransport {
     const crc16 = computeCrc16(packageBytes.subarray(20));
 
     this.callbacks.onLog(
-      makeLog(
+      makePacketLog(
         'TX',
         'WEB-BLE-WF',
         `Streaming ${frames.length} experimental frames to ${mapping.writeCharacteristicUuid}`,
@@ -363,7 +325,7 @@ export class WebBluetoothTransport implements WatchTransport {
     }
 
     this.callbacks.onLog(
-      makeLog(
+      makePacketLog(
         'TX',
         `${serviceUuid.slice(0, 8)}`,
         `Wrote ${payload.length}B to ${characteristicUuid}`,

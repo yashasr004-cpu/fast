@@ -74,7 +74,11 @@ export function BleInspectorPanel({
             <span>Bluetooth Transport Mode</span>
           </div>
           <span className="badge">
-            {transportMode === 'mock' ? 'Simulator' : 'Web Bluetooth'}
+            {transportMode === 'mock'
+              ? 'Simulator'
+              : webBleCheck.native
+                ? 'Android BLE'
+                : 'Web Bluetooth'}
           </span>
         </div>
 
@@ -91,7 +95,9 @@ export function BleInspectorPanel({
             className={`seg-btn ${transportMode === 'web-bluetooth' ? 'active' : ''}`}
             onClick={() => onChangeMode('web-bluetooth')}
           >
-            Real Web Bluetooth (Chrome / Edge)
+            {webBleCheck.native
+              ? 'Real Android BLE (Native Bluetooth)'
+              : 'Real Web Bluetooth (Chrome / Edge)'}
           </button>
         </div>
 
@@ -101,9 +107,10 @@ export function BleInspectorPanel({
             <strong>Hardware Protocol Note:</strong> Fastrack Reflex 3.0 uses a
             proprietary, undocumented BLE GATT protocol inside the{' '}
             <em>Fastrack Reflex World</em> app. Use <strong>Simulator</strong> mode to
-            design, preview, and test watchface flashing safely, or switch to{' '}
-            <strong>Real Web Bluetooth</strong> to scan your band&apos;s GATT UUIDs and
-            map custom characteristics once captured from a Bluetooth HCI snoop log.
+            test flows safely, or switch to{' '}
+            <strong>{webBleCheck.native ? 'Real Android BLE' : 'Real Web Bluetooth'}</strong>{' '}
+            to scan your band&apos;s GATT UUIDs and test mapped characteristics once
+            captured from a Bluetooth HCI snoop log.
           </div>
         </div>
 

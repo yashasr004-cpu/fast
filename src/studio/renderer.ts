@@ -291,3 +291,34 @@ export function renderWatchfaceToCanvas(
   }
 }
 
+export async function renderWatchfaceToRgba(
+  config: WatchfaceConfig,
+  telemetry: WatchTelemetry,
+  date: Date
+): Promise<Uint8ClampedArray> {
+  const canvas = document.createElement('canvas');
+  canvas.width = REFLEX_WIDTH;
+  canvas.height = REFLEX_HEIGHT;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('2D canvas context unavailable for watchface encoding.');
+  }
+
+  let bgImage: HTMLImageElement | null = null;
+  if (config.backgroundMode === 'image' && config.bgImageDataUrl) {
+    bgImage = await new Promise<HTMLImageElement | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = config.bgImageDataUrl!;
+    });
+  }
+
+  renderWatchfaceToCanvas(ctx, config, telemetry, date, {
+    bgImage,
+    activeNotification: null,
+  });
+
+  return ctx.getImageData(0, 0, REFLEX_WIDTH, REFLEX_HEIGHT).data;
+}
+
