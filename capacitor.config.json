@@ -1,0 +1,8 @@
+{
+  "appId": "com.fastrack.reflexstudio",
+  "appName": "Fastrack Reflex Studio",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

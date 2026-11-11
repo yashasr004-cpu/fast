@@ -1,0 +1,7 @@
+node_modules/
+_broken_nm/
+dist/
+android/
+.vite/
+*.local
+.DS_Store
